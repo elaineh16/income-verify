@@ -1,0 +1,16 @@
+{
+  "name": "income-verifier",
+  "private": true,
+  "type": "module",
+  "description": "Browser-only income verification demo (static HTML/JS)",
+  "scripts": {
+    "make-fixture": "node scripts/make-test-pdf.mjs",
+    "install:browsers": "node scripts/install-browsers.mjs",
+    "test:e2e": "node scripts/run-e2e.mjs",
+    "serve": "python3 -m http.server 8080"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "pdf-lib": "^1.17.1"
+  }
+}

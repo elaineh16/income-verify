@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Income Verification Tool</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main id="app" class="page" data-state="initial">
+      <div class="container">
+        <h1 class="page-title">Income Verification Tool</h1>
+
+        <!-- Upload card (matches design/app/page.tsx) -->
+        <section class="card" aria-label="Upload">
+          <div class="card-header">
+            <h2 class="card-title">Upload Document</h2>
+          </div>
+          <div class="card-content">
+            <div
+              id="dropzone"
+              class="dropzone"
+              role="button"
+              tabindex="0"
+              aria-label="Drop PDF or click to browse"
+            >
+              <input
+                id="file-input"
+                type="file"
+                accept="application/pdf,.pdf"
+                class="file-input-hidden"
+              />
+              <label for="file-input" class="dropzone-label">
+                <svg class="icon icon-upload" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="17 8 12 3 7 8" />
+                  <line x1="12" y1="3" x2="12" y2="15" />
+                </svg>
+                <p class="dropzone-text">
+                  Drag and drop your PDF here, or click to browse
+                </p>
+                <p class="dropzone-hint">Only PDF files accepted</p>
+              </label>
+            </div>
+
+            <div id="file-row" class="file-row hidden">
+              <div class="file-row-main">
+                <svg class="icon icon-file" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
+                  <polyline points="14 2 14 8 20 8" />
+                  <line x1="16" y1="13" x2="8" y2="13" />
+                  <line x1="16" y1="17" x2="8" y2="17" />
+                  <line x1="10" y1="9" x2="8" y2="9" />
+                </svg>
+                <span id="file-name" class="file-name"></span>
+              </div>
+              <div class="file-row-actions">
+                <button type="button" id="verify-btn" class="btn btn-primary btn-sm">
+                  Verify
+                </button>
+                <button type="button" id="clear-btn" class="btn btn-ghost btn-sm">
+                  Clear
+                </button>
+              </div>
+            </div>
+
+            <div id="upload-error" class="upload-error hidden" role="alert"></div>
+          </div>
+        </section>
+
+        <!-- Results card -->
+        <section id="results-card" class="card hidden" aria-live="polite">
+          <div class="card-header">
+            <h2 class="card-title">Verification Results</h2>
+          </div>
+          <div class="card-content card-content-stack">
+            <div id="results-loading" class="results-loading hidden">
+              <div class="spinner" aria-hidden="true"></div>
+              <span class="results-loading-text">Analyzing document...</span>
+            </div>
+
+            <div id="results-body" class="results-body hidden">
+              <div class="field">
+                <p class="field-label">Uploaded File</p>
+                <p class="field-value field-value-inline">
+                  <svg class="icon icon-file-sm" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
+                    <polyline points="14 2 14 8 20 8" />
+                  </svg>
+                  <span id="upload-filename">—</span>
+                </p>
+              </div>
+
+              <div class="field">
+                <p class="field-label">Extracted Income</p>
+                <p id="extracted-income" class="field-value field-value-large">—</p>
+              </div>
+
+              <div class="field">
+                <p class="field-label">Decision</p>
+                <div id="decision-wrap" class="decision-pill">
+                  <span id="decision-icon" class="decision-icon" aria-hidden="true"></span>
+                  <span id="final-decision" class="decision-text">—</span>
+                </div>
+              </div>
+
+              <div class="field">
+                <p class="field-label">Explanation</p>
+                <p id="explanation" class="explanation-box">—</p>
+              </div>
+
+              <details id="details" class="details-block">
+                <summary class="details-summary">Extraction details</summary>
+                <pre id="details-body" class="details-pre"></pre>
+              </details>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
