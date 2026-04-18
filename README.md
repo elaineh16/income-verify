@@ -32,12 +32,6 @@ A lightweight **JavaScript** web app that uploads a PDF, extracts text using **M
 - Mozilla **pdf.js**  
 - Static, GitHub Pages–friendly  
 
-## Decision Rule
-
-- **Verified**: income > $150,000  
-- **Not Verified**: income ≤ $150,000  
-- **Unable to Determine**: no confident selection  
-
 ## Setup
 
 Run locally with a simple static server:
