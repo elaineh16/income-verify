@@ -1,12 +1,6 @@
 /**
  * PDF text extraction using Mozilla pdf.js (ES module from jsDelivr).
- *
- * Browser-only: never import this module from Next.js RSC / Node SSR — pdf.js needs DOM + worker.
- * In Next.js, use `dynamic(() => import(...), { ssr: false })` for any component that calls this.
- *
- * Root cause note (Vercel vs local): `getTextContent().items` order follows the PDF **content stream**,
- * not always left-to-right / top-to-bottom. Joining items naïvely can scramble labels vs dollar amounts.
- * We rebuild **reading order** by clustering glyphs into lines (Y) and sorting (X), then join lines with \n.
+ * This file is used to extract the text from the PDF file.
  */
 
 import * as pdfjsLib from "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.6.82/+esm";
