@@ -60,13 +60,13 @@ From the same project directory:
    npm run install:browsers
    ```
 
-3. **Generate the test PDF fixture** (text-based PDF with a sample AGI line)
+3. **Generate the test PDF fixtures** (minimal text-based PDFs for each scenario)
 
    ```bash
    npm run make-fixture
    ```
 
-   This writes `tests/fixtures/agi-over-threshold.pdf`. You can re-run this anytime to regenerate the file.
+   This writes several files under `tests/fixtures/` (AGI, salary, annual income, taxable income, business-only, monthly-only, conflicting labels). Re-run anytime to regenerate them.
 
 4. **Run the E2E suite**
 
@@ -74,7 +74,7 @@ From the same project directory:
    npm run test:e2e
    ```
 
-The test runner starts a local static server on port **8765**, opens the app in Chromium, uploads the fixture PDF, clicks **Verify**, and asserts the **Verified** outcome for AGI above the threshold.
+The test runner starts a local static server on port **8765**, opens the app in Chromium, and runs scenarios such as AGI/salary above threshold, annual income below threshold, business-only and monthly-only **Unable to Determine**, and conflicting labels.
 
 ---
 
@@ -83,7 +83,7 @@ The test runner starts a local static server on port **8765**, opens the app in 
 | Command | Purpose |
 | -------- | -------- |
 | `npm run serve` | Serves the app on port **8080** with `python3 -m http.server` (same idea as section 2). |
-| `npm run make-fixture` | Builds `tests/fixtures/agi-over-threshold.pdf` using `pdf-lib`. |
+| `npm run make-fixture` | Builds all `tests/fixtures/*.pdf` samples using `pdf-lib`. |
 | `npm run install:browsers` | Downloads Playwright Chromium into `.playwright-browsers/`. |
 | `npm run test:e2e` | Runs Playwright tests (`tests/e2e/`). Sets `PLAYWRIGHT_BROWSERS_PATH` so the browser path is consistent. |
 
@@ -95,7 +95,7 @@ The test runner starts a local static server on port **8765**, opens the app in 
 | ----- | ----------- |
 | Blank page or module errors | Serve over **http://localhost**, not `file://`. |
 | `Executable doesn't exist` (Playwright) | Run `npm run install:browsers` again. On CI, ensure `npm run make-fixture` ran so the PDF exists. |
-| E2E can’t find the PDF | Run `npm run make-fixture` from the repo root. |
+| E2E can’t find a fixture | Run `npm run make-fixture` from the repo root. |
 | PDF parsing fails in the browser | Corporate proxies sometimes block jsDelivr; allow **cdn.jsdelivr.net** or use an offline pdf.js setup (not included in this demo). |
 
 ---

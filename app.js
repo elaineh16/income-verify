@@ -6,7 +6,7 @@ import { extractPdfText } from "./parser.js";
 import { analyzeIncomeFromText } from "./verifier.js";
 import { validatePdfFile, formatUsd } from "./utils.js";
 
-/** Append `?debug=1` to the URL for console + JSON diagnostics (pdf.js meta, text preview, AGI resolution). */
+/** Append `?debug=1` to the URL for console + JSON diagnostics (pdf.js meta, text preview, selection). */
 const DEBUG =
   typeof window !== "undefined" &&
   new URLSearchParams(window.location.search).get("debug") === "1";
@@ -31,6 +31,7 @@ const els = {
   resultsBody: document.getElementById("results-body"),
   uploadFilename: document.getElementById("upload-filename"),
   extractedIncome: document.getElementById("extracted-income"),
+  valueMatchMeta: document.getElementById("value-match-meta"),
   decisionWrap: document.getElementById("decision-wrap"),
   decisionIcon: document.getElementById("decision-icon"),
   finalDecision: document.getElementById("final-decision"),
@@ -86,6 +87,8 @@ function resetUi() {
   els.resultsBody.classList.add("hidden");
   els.detailsBody.textContent = "";
   els.details.open = false;
+  els.valueMatchMeta.textContent = "";
+  els.valueMatchMeta.classList.add("hidden");
   setPageState("initial");
 }
 
@@ -103,12 +106,24 @@ function onFileChosen(file) {
   setPageState("selected");
 }
 
-function renderResults(filename, result, candidates, chosen, agiResolution, debug) {
+function renderResults(filename, result, candidates, chosen, selectionResolution, debug) {
   els.uploadFilename.textContent = filename;
-  els.extractedIncome.textContent =
-    result.value === null || result.value === undefined
-      ? "Unable to extract"
-      : result.formattedValue || formatUsd(result.value);
+
+  if (result.value === null || result.value === undefined) {
+    els.extractedIncome.textContent = "—";
+    els.valueMatchMeta.textContent = "";
+    els.valueMatchMeta.classList.add("hidden");
+  } else {
+    els.extractedIncome.textContent =
+      result.formattedValue || formatUsd(result.value);
+    if (result.matchedLabel) {
+      els.valueMatchMeta.textContent = `Matched label: ${result.matchedLabel}`;
+      els.valueMatchMeta.classList.remove("hidden");
+    } else {
+      els.valueMatchMeta.textContent = "";
+      els.valueMatchMeta.classList.add("hidden");
+    }
+  }
 
   els.finalDecision.textContent = result.status;
   setDecisionPill(result.status);
@@ -119,44 +134,35 @@ function renderResults(filename, result, candidates, chosen, agiResolution, debu
     {
       ...(DEBUG && debug ? { debug } : {}),
       policy:
-        "Decision uses Adjusted Gross Income (AGI) only — see agiResolution.",
-      agiResolution: agiResolution
+        "Decision uses label-guided scoring on dollar amounts near personal-income phrases — see selectionResolution.",
+      selectionResolution: selectionResolution
         ? {
-            ambiguous: agiResolution.ambiguous,
-            matches: (agiResolution.matches || []).map((x) => ({
-              raw: x.raw,
-              value: x.value,
-              labelSnippet: x.labelSnippet,
-            })),
-            chosenAgi: chosen
+            code: selectionResolution.code,
+            ambiguous: selectionResolution.ambiguous,
+            filterNote: selectionResolution.filterNote,
+            chosen: chosen
               ? {
                   raw: chosen.raw,
                   value: chosen.value,
+                  score: chosen.score,
                   context: chosen.context,
-                  source: chosen.source,
+                  primaryLabel: chosen.primaryLabel,
+                  positiveSignals: chosen.positiveSignals,
+                  negativeSignals: chosen.negativeSignals,
                 }
               : null,
-          }
-        : null,
-      chosen: chosen
-        ? {
-            raw: chosen.raw,
-            value: chosen.value,
-            score: chosen.score,
-            context: chosen.context,
-            positiveSignals: chosen.positiveSignals,
-            negativeSignals: chosen.negativeSignals,
-            source: chosen.source,
           }
         : null,
       topCandidates: sorted.slice(0, 12).map((c) => ({
         raw: c.raw,
         value: c.value,
         score: c.score,
+        primaryLabel: c.primaryLabel,
         context: c.context,
         positiveSignals: c.positiveSignals,
         negativeSignals: c.negativeSignals,
-        monthlyWithoutAnnual: c.monthlyWithoutAnnual,
+        subAnnualWithoutAnnualFraming: c.subAnnualWithoutAnnualFraming,
+        hardLineReject: c.hardLineReject,
       })),
     },
     null,
@@ -177,7 +183,7 @@ async function runVerification() {
 
   try {
     const { fullText, meta } = await extractPdfText(currentFile);
-    const { result, candidates, chosen, agiResolution, debug } =
+    const { result, candidates, chosen, selectionResolution, debug } =
       analyzeIncomeFromText(fullText, {
         debug: DEBUG,
         extractionMeta: meta,
@@ -190,7 +196,7 @@ async function runVerification() {
       result,
       candidates,
       chosen,
-      agiResolution,
+      selectionResolution,
       debug
     );
     els.resultsLoading.classList.add("hidden");

@@ -1,10 +1,8 @@
 /**
- * Income verification is **AGI-only** (Adjusted Gross Income):
- * - Parse a dollar amount anchored to an "Adjusted Gross Income (AGI)" style label.
- * - Verified if AGI > threshold; Not Verified if AGI ≤ threshold.
- * - If AGI cannot be found unambiguously → Unable to Determine (no fallback to revenue / taxable income).
- *
- * We still list heuristic-scored dollar candidates in debug output for transparency.
+ * Label-guided income verification for case-study PDFs:
+ * - Extract dollar candidates from full text, score by nearby labels (not "largest number wins").
+ * - Prefer strong personal-income labels (AGI, annual income, salary, …); reject business / payment lines.
+ * - If ambiguous or unsafe → Unable to Determine (conservative by design).
  */
 
 import {
@@ -18,36 +16,81 @@ import {
 export const INCOME_THRESHOLD = 150_000;
 
 /**
- * Strict label → amount: only the $ figure immediately tied to this phrase counts as AGI.
- * (A wide "context window" heuristic falsely scores every $ on the same line—this regex avoids that.)
+ * High-priority personal / wage income labels (weights are relative, not dollars).
+ * Regexes run on a whitespace-normalized context so pdf.js spacing quirks still match.
  */
-const RE_AGI_DOLLAR =
-  /Adjusted\s+Gross\s+Income\s*(?:\(\s*AGI\s*\))?\s*[:#–—]?\s*\$\s*([\d,]+(?:\.\d{1,2})?)/gi;
+const POSITIVE_RULES = [
+  {
+    re: /\badjusted\s+gross\s+income\b/i,
+    weight: 10,
+    displayName: "Adjusted Gross Income",
+  },
+  { re: /\bannual\s+income\b/i, weight: 8, displayName: "Annual Income" },
+  { re: /\bannual\s+salary\b/i, weight: 8, displayName: "Annual Salary" },
+  /** Do not match the "Gross Income" tail inside "Adjusted Gross Income". */
+  { re: /(?<!adjusted\s)\bgross\s+income\b/i, weight: 8, displayName: "Gross Income" },
+  { re: /\btotal\s+income\b/i, weight: 7, displayName: "Total Income" },
+  { re: /\bcompensation\b/i, weight: 7, displayName: "Compensation" },
+  { re: /\bearnings\b/i, weight: 6, displayName: "Earnings" },
+  { re: /\bwages\b/i, weight: 6, displayName: "Wages" },
+  { re: /\bsalary\b/i, weight: 6, displayName: "Salary" },
+  /** Caution tier — usable, but easier to trigger ambiguity checks vs other strong fields. */
+  {
+    re: /\btaxable\s+income\b/i,
+    weight: 4,
+    displayName: "Taxable Income",
+    caution: true,
+  },
+  /** Standalone AGI (skip if full “adjusted gross income” matched). */
+  { re: /\bagi\b/i, weight: 8, displayName: "AGI", agiShort: true },
+  /** Weak fallback when nothing else matched. */
+  {
+    re: /\bincome\b/i,
+    weight: 2,
+    displayName: "income (generic)",
+    generic: true,
+  },
+];
 
-/** Fallback: "AGI:" on its own line (still requires $ for safety). */
-const RE_AGI_SHORT = /\bAGI\b\s*[:#–—]?\s*\$\s*([\d,]+(?:\.\d{1,2})?)/gi;
+const STRONG_POSITIVE_KEYS = new Set(
+  POSITIVE_RULES.filter((r) => !r.generic && !r.caution).map((r) => r.displayName)
+);
 
-/** Lines that look like non-AGI rows (revenue, taxable income, etc.) — reject unless AGI phrase is on the same line. */
-function lineFailsNonAgiRow(line) {
-  const L = line.trim().toLowerCase();
-  if (!L) return true;
-  if (L.includes("adjusted gross income")) return false;
-  if (L.startsWith("taxable income")) return true;
-  if (/(^|\b)(business\s+revenue|gross\s+receipts|total\s+revenue|net\s+business\s+income|ordinary\s+business)\b/i.test(L)) {
-    return true;
-  }
-  return false;
-}
+/** Reject / penalize non-personal-income financial lines (specific phrases before broad “revenue”). */
+const NEGATIVE_RULES = [
+  { re: /\bbusiness\s+revenue\b/i, weight: 8, label: "business revenue" },
+  { re: /\bgross\s+receipts\b/i, weight: 8, label: "gross receipts" },
+  { re: /\boperating\s+expenses\b/i, weight: 7, label: "operating expenses" },
+  { re: /\bnet\s+profit\b/i, weight: 8, label: "net profit" },
+  { re: /\baccount\s+balance\b/i, weight: 6, label: "account balance" },
+  { re: /\bbalance\s+due\b/i, weight: 7, label: "balance due" },
+  { re: /\bamount\s+due\b/i, weight: 7, label: "amount due" },
+  { re: /\btax\s+due\b/i, weight: 7, label: "tax due" },
+  { re: /\brefund\b/i, weight: 6, label: "refund" },
+  { re: /\bwithheld\b/i, weight: 6, label: "withheld" },
+  { re: /\bdeduction\b/i, weight: 5, label: "deduction" },
+  { re: /\bdeposit\b/i, weight: 5, label: "deposit" },
+  { re: /\bpayment\b/i, weight: 5, label: "payment" },
+  { re: /\bmortgage\b/i, weight: 5, label: "mortgage" },
+  { re: /\brent\b/i, weight: 4, label: "rent" },
+  { re: /\bmonthly\s+income\b/i, weight: 8, label: "monthly income" },
+  { re: /\bweekly\s+income\b/i, weight: 8, label: "weekly income" },
+  { re: /\bbi-?weekly\s+income\b/i, weight: 8, label: "biweekly income" },
+  { re: /\binterest\s+expense\b/i, weight: 5, label: "interest expense" },
+  { re: /\bsubtotal\b/i, weight: 4, label: "subtotal" },
+  /** Broad — keep after specific “business revenue”. */
+  { re: /\brevenue\b/i, weight: 5, label: "revenue" },
+];
 
-/** Standalone "AGI: $…" — allow only if the line is not clearly another tax line. */
-function lineAllowsShortAgiFallback(line) {
-  const L = line.toLowerCase();
-  if (L.includes("adjusted gross income")) return true;
-  if (/(revenue|receipts|gross\s+sales|taxable\s+income|net\s+profit|estimate|sch(\.|edule)\s*c\b)/i.test(L)) {
-    return false;
-  }
-  return /\bagi\b/.test(L);
-}
+const ANNUAL_FRAMING = [
+  "annual",
+  "per year",
+  "/yr",
+  "yearly",
+  "tax year",
+  "calendar year",
+  "per annum",
+];
 
 function getLineAtIndex(fullText, index) {
   const before = fullText.lastIndexOf("\n", Math.max(0, index - 1));
@@ -57,215 +100,19 @@ function getLineAtIndex(fullText, index) {
   return fullText.slice(start, end);
 }
 
-function collectRegexMatches(fullText, re, sourceTag) {
-  const matches = [];
-  re.lastIndex = 0;
-  let m;
-  while ((m = re.exec(fullText)) !== null) {
-    const full = m[0];
-    const idxDollar = full.indexOf("$");
-    if (idxDollar < 0) continue;
-    const raw = full.slice(idxDollar);
-    const value = parseMoneyToNumber(raw, m[1]);
-    if (value === null) continue;
-    const startIndex = m.index + idxDollar;
-    const endIndex = startIndex + raw.length;
-    const line = getLineAtIndex(fullText, m.index);
-    matches.push({
-      value,
-      raw,
-      startIndex,
-      endIndex,
-      labelSnippet: squishWhitespace(full.slice(0, Math.min(full.length, 72))),
-      source: sourceTag,
-      lineText: line,
-    });
-  }
-  return matches;
-}
-
 /**
- * Extract every AGI-labeled dollar amount (primary; short only if no primary — mirrors selection).
+ * Lines that look like business P&L / receipts without a personal income label — never pick these dollars.
  */
-export function extractAgiMatches(fullText) {
-  const text = normalizePdfText(fullText);
-  const primary = collectRegexMatches(text, RE_AGI_DOLLAR, "primary");
-  if (primary.length) return primary;
-  return collectRegexMatches(text, RE_AGI_SHORT, "short");
+function isBusinessOnlyIncomeLine(line) {
+  const hasPersonal =
+    /\badjusted\s+gross\s+income\b|\bagi\b|\bannual\s+income\b|\bannual\s+salary\b|\bgross\s+income\b|\btotal\s+income\b|\btaxable\s+income\b|\bsalary\b|\bwages\b|\bearnings\b|\bcompensation\b/i.test(
+      line
+    );
+  if (hasPersonal) return false;
+  return /\b(business\s+revenue|gross\s+receipts|net\s+profit|operating\s+expenses|ordinary\s+business)\b/i.test(
+    line
+  );
 }
-
-/**
- * Filter + rank AGI matches — does **not** use largest dollar amount as a signal.
- * Short "AGI: $…" is used only when **no** primary `Adjusted Gross Income` hits exist at all.
- * If primary hits exist but every line is rejected → Unable (prefer caution over short-fallback).
- */
-function filterAndRankAgiMatches(primaryList, shortList) {
-  const keptPrimary = primaryList.filter((m) => !lineFailsNonAgiRow(m.lineText));
-
-  if (keptPrimary.length) {
-    return {
-      used: keptPrimary,
-      rejected: primaryList.filter((m) => !keptPrimary.includes(m)),
-      mode: "primary",
-    };
-  }
-
-  if (primaryList.length > 0) {
-    return {
-      used: [],
-      rejected: primaryList,
-      mode: "primary-rejected-unsafe",
-    };
-  }
-
-  const keptShort = shortList.filter((m) => lineAllowsShortAgiFallback(m.lineText));
-  return {
-    used: keptShort,
-    rejected: shortList.filter((m) => !keptShort.includes(m)),
-    mode: "short-fallback",
-  };
-}
-
-/**
- * Deterministic tie-break: prefer **earliest document offset** (reading order after parser fix), not max value.
- */
-function pickCanonicalMatch(used) {
-  if (!used.length) return null;
-  const byPosition = [...used].sort((a, b) => a.startIndex - b.startIndex);
-  const values = [...new Set(byPosition.map((m) => m.value))];
-  if (values.length > 1) return { ambiguous: true, choice: null };
-  const value = values[0];
-  const sameVal = byPosition.filter((m) => m.value === value);
-  sameVal.sort((a, b) => {
-    if (a.source !== b.source) return a.source === "primary" ? -1 : 1;
-    return a.startIndex - b.startIndex;
-  });
-  return { ambiguous: false, choice: sameVal[0] };
-}
-
-/**
- * Pick a single AGI figure, or null if none / conflicting values.
- */
-export function selectAgiCandidate(fullText, options = {}) {
-  const text = normalizePdfText(fullText);
-  const primary = collectRegexMatches(text, RE_AGI_DOLLAR, "primary");
-  const short = collectRegexMatches(text, RE_AGI_SHORT, "short");
-  const { used, rejected, mode } = filterAndRankAgiMatches(primary, short);
-
-  if (!used.length) {
-    return {
-      candidate: null,
-      ambiguous: false,
-      matches: [...primary, ...short],
-      rejected,
-      selectionMode: mode,
-      filterNote:
-        mode === "primary-rejected-unsafe"
-          ? "primary_lines_rejected_not_using_short_fallback"
-          : "no_match_after_line_filter",
-    };
-  }
-
-  const distinct = new Set(used.map((x) => x.value));
-  if (distinct.size > 1) {
-    return {
-      candidate: null,
-      ambiguous: true,
-      matches: used,
-      rejected,
-      selectionMode: mode,
-      filterNote: "multiple_distinct_agi_values",
-    };
-  }
-
-  const picked = pickCanonicalMatch(used);
-  if (picked.ambiguous) {
-    return {
-      candidate: null,
-      ambiguous: true,
-      matches: used,
-      rejected,
-      selectionMode: mode,
-      filterNote: "tie_break_failed",
-    };
-  }
-
-  const m = picked.choice;
-  const candidate = {
-    raw: m.raw,
-    value: m.value,
-    startIndex: m.startIndex,
-    endIndex: m.endIndex,
-    context: getContextWindow(text, m.startIndex, m.endIndex),
-    score: 100,
-    positiveSignals: ["Adjusted Gross Income (AGI)"],
-    negativeSignals: [],
-    monthlyWithoutAnnual: false,
-    structuralReasons: [],
-    source: m.source === "primary" ? "agi-label-regex" : "agi-short-fallback",
-  };
-
-  return {
-    candidate,
-    ambiguous: false,
-    matches: used,
-    rejected,
-    selectionMode: mode,
-    filterNote: "ok",
-  };
-}
-
-/**
- * Weighted positive signals (longer phrases first to prefer specific labels).
- * We intentionally keep "income" lower-weight because it appears in many non-salary lines.
- */
-const POSITIVE_RULES = [
-  { phrase: "adjusted gross income", weight: 6, label: "adjusted gross income" },
-  { phrase: "taxable income", weight: 5, label: "taxable income" },
-  { phrase: "gross income", weight: 5, label: "gross income" },
-  { phrase: "annual income", weight: 5, label: "annual income" },
-  { phrase: "total income", weight: 4, label: "total income" },
-  { phrase: "compensation", weight: 4, label: "compensation" },
-  { phrase: "earnings", weight: 3, label: "earnings" },
-  { phrase: "wages", weight: 3, label: "wages" },
-  { phrase: "salary", weight: 3, label: "salary" },
-  // "agi" is short; require word boundaries via includes check on padded text
-  { phrase: " agi ", weight: 5, label: "AGI" },
-  /** Last-resort label match: only applied if no stronger income label hit (see scoreCandidate). */
-  { phrase: "income", weight: 2, label: "income (generic)", generic: true },
-];
-
-const STRONG_POSITIVE_LABELS = new Set(
-  POSITIVE_RULES.filter((r) => !r.generic).map((r) => r.label)
-);
-
-const NEGATIVE_RULES = [
-  { phrase: "balance due", weight: 6, label: "balance due" },
-  { phrase: "amount due", weight: 6, label: "amount due" },
-  { phrase: "tax due", weight: 6, label: "tax due" },
-  { phrase: "interest paid", weight: 5, label: "interest paid" },
-  { phrase: "withheld", weight: 5, label: "withheld" },
-  { phrase: "deduction", weight: 4, label: "deduction" },
-  { phrase: "mortgage", weight: 4, label: "mortgage" },
-  { phrase: "refund", weight: 5, label: "refund" },
-  { phrase: "payment", weight: 4, label: "payment" },
-  { phrase: "deposit", weight: 4, label: "deposit" },
-  { phrase: "subtotal", weight: 4, label: "subtotal" },
-  { phrase: "rent", weight: 3, label: "rent" },
-  { phrase: "biweekly", weight: 5, label: "biweekly" },
-  { phrase: "weekly", weight: 4, label: "weekly" },
-  { phrase: "monthly", weight: 5, label: "monthly" },
-];
-
-/** If monthly appears without explicit annual framing, we refuse to treat it as annual income. */
-const ANNUAL_FRAMING = [
-  "annual",
-  "per year",
-  "/yr",
-  "yearly",
-  "tax year",
-  "calendar year",
-];
 
 /**
  * Parse "$162,450.00" / "162,450 USD" style matches into a numeric dollar amount.
@@ -277,14 +124,10 @@ function parseMoneyToNumber(rawMatch, numericCapture) {
   return n;
 }
 
-/**
- * Quick filters for obvious non-income literals (still conservative).
- */
 function applyStructuralPenalties({ value, raw, fullText, startIndex, endIndex }) {
   let penalty = 0;
   const reasons = [];
 
-  // Percentages near the match (e.g., "15.3 %")
   const window = fullText.slice(
     Math.max(0, startIndex - 8),
     Math.min(fullText.length, endIndex + 8)
@@ -294,7 +137,6 @@ function applyStructuralPenalties({ value, raw, fullText, startIndex, endIndex }
     reasons.push("near-percent-sign");
   }
 
-  // Looks like a tax year (common on forms) — only when it smells like a year label
   const intVal = Math.round(value);
   if (
     Number.isInteger(value) &&
@@ -323,7 +165,6 @@ export function extractCandidateValues(fullText) {
   const candidates = [];
   const text = fullText;
 
-  // Primary: $12,345.67
   const reDollar = /\$\s*([\d,]+(?:\.\d{1,2})?)/g;
   let m;
   while ((m = reDollar.exec(text)) !== null) {
@@ -341,7 +182,6 @@ export function extractCandidateValues(fullText) {
     });
   }
 
-  // Secondary: 12,345 USD
   const reUsd = /\b([\d,]+(?:\.\d{1,2})?)\s*(?:USD|US\s*DOLLARS?)\b/gi;
   while ((m = reUsd.exec(text)) !== null) {
     const raw = m[0];
@@ -358,7 +198,6 @@ export function extractCandidateValues(fullText) {
     });
   }
 
-  // De-dupe identical positions (regex overlap)
   const seen = new Set();
   const unique = [];
   for (const c of candidates) {
@@ -371,51 +210,83 @@ export function extractCandidateValues(fullText) {
   return unique;
 }
 
+function pickPrimaryLabel(positiveSignals, ruleMatches) {
+  if (!ruleMatches.length) return null;
+  const sorted = [...ruleMatches].sort((a, b) => {
+    if (b.weight !== a.weight) return b.weight - a.weight;
+    return a.displayName.localeCompare(b.displayName);
+  });
+  return sorted[0].displayName;
+}
+
 /**
  * Score a single candidate using keyword hits in a lowercase context window.
- * @returns {object} candidate enriched with score + signal lists + flags
  */
 export function scoreCandidate(candidate, fullText) {
+  const lineText = getLineAtIndex(fullText, candidate.startIndex);
+  const lineNorm = squishWhitespace(lineText);
+  const lineLower = lineNorm.toLowerCase();
+
   const ctxRaw = getContextWindow(
     fullText,
     candidate.startIndex,
     candidate.endIndex,
     140
   );
-  const ctx = ` ${ctxRaw.toLowerCase()} `;
 
   let score = 0;
   const positiveSignals = [];
-  const negativeSignals = [];
+  const ruleMatches = [];
+
+  /** Labels are matched on the candidate’s line only so other rows (e.g. revenue vs AGI) do not pollute context. */
+  const hasAdjustedGross = /\badjusted\s+gross\s+income\b/i.test(lineLower);
 
   for (const rule of POSITIVE_RULES) {
     if (rule.generic) continue;
-    const needle = ` ${rule.phrase.trim()} `;
-    if (ctx.includes(needle)) {
-      score += rule.weight;
-      positiveSignals.push(rule.label);
+    if (rule.agiShort && hasAdjustedGross) continue;
+    if (rule.displayName === "Salary" && /\bannual\s+salary\b/i.test(lineLower)) {
+      continue;
     }
+    if (!rule.re.test(lineLower)) continue;
+    score += rule.weight;
+    positiveSignals.push(rule.displayName);
+    ruleMatches.push(rule);
   }
 
-  // Generic "income" is noisy ("tax due", "interest income", etc.) — use only as a weak fallback.
-  const genericIncomeRule = POSITIVE_RULES.find((r) => r.generic);
-  if (genericIncomeRule) {
+  const genericRule = POSITIVE_RULES.find((r) => r.generic);
+  if (genericRule) {
     const hasStrong = positiveSignals.some((label) =>
-      STRONG_POSITIVE_LABELS.has(label)
+      STRONG_POSITIVE_KEYS.has(label)
     );
-    const needle = ` ${genericIncomeRule.phrase.trim()} `;
-    if (!hasStrong && ctx.includes(needle)) {
-      score += genericIncomeRule.weight;
-      positiveSignals.push(genericIncomeRule.label);
+    const hasCautionOnly =
+      positiveSignals.length > 0 &&
+      positiveSignals.every((l) => {
+        const r = POSITIVE_RULES.find((x) => x.displayName === l);
+        return r && (r.caution || r.generic);
+      });
+    const isSubannualIncomeLine =
+      /\bmonthly\s+income\b/i.test(lineLower) ||
+      /\bweekly\s+income\b/i.test(lineLower) ||
+      /\bbi-?weekly\s+income\b/i.test(lineLower);
+    if (
+      (!hasStrong || hasCautionOnly) &&
+      genericRule.re.test(lineLower) &&
+      !isSubannualIncomeLine
+    ) {
+      score += genericRule.weight;
+      positiveSignals.push(genericRule.displayName);
+      ruleMatches.push(genericRule);
     }
   }
 
+  const negativeSignals = [];
   for (const rule of NEGATIVE_RULES) {
-    const needle = ` ${rule.phrase.trim()} `;
-    if (ctx.includes(needle)) {
-      score -= rule.weight;
-      negativeSignals.push(rule.label);
+    if (!rule.re.test(lineLower)) continue;
+    if (rule.label === "interest expense" && /interest\s+income/i.test(lineLower)) {
+      continue;
     }
+    score -= rule.weight;
+    negativeSignals.push(rule.label);
   }
 
   const { penalty, reasons } = applyStructuralPenalties({
@@ -427,23 +298,25 @@ export function scoreCandidate(candidate, fullText) {
   });
   score -= penalty;
 
-  // Monthly income: do not silently annualize; heavily penalize unless annual framing exists.
-  // Use a tighter window so unrelated "monthly" mentions elsewhere on the line do not taint annual totals.
-  const tightCtx = getContextWindow(
-    fullText,
-    candidate.startIndex,
-    candidate.endIndex,
-    70
-  );
-  const hasMonthly = /\bmonthly\b/i.test(tightCtx);
-  const hasAnnualFraming = ANNUAL_FRAMING.some((p) =>
-    tightCtx.toLowerCase().includes(p)
-  );
-  let monthlyWithoutAnnual = false;
-  if (hasMonthly && !hasAnnualFraming) {
-    score -= 25;
-    monthlyWithoutAnnual = true;
-    negativeSignals.push("monthly (no explicit annual framing)");
+  const hasMonthly = /\bmonthly\b/i.test(lineNorm);
+  const hasWeekly = /\bweekly\b/i.test(lineNorm);
+  const hasBiweekly = /\bbi-?weekly\b/i.test(lineNorm);
+  const hasAnnualFraming = ANNUAL_FRAMING.some((p) => lineLower.includes(p));
+
+  const subAnnualWithoutAnnualFraming =
+    (hasMonthly || hasWeekly || hasBiweekly) && !hasAnnualFraming;
+
+  const hardLineReject = isBusinessOnlyIncomeLine(lineText);
+
+  const primaryLabel = pickPrimaryLabel(positiveSignals, ruleMatches);
+
+  const nonGenericRm = ruleMatches.filter((r) => !r.generic);
+  let labelWeight = 0;
+  if (nonGenericRm.length) {
+    labelWeight = Math.max(...nonGenericRm.map((r) => r.weight));
+  } else if (ruleMatches.some((r) => r.generic)) {
+    const g = POSITIVE_RULES.find((r) => r.generic);
+    if (g) labelWeight = g.weight;
   }
 
   return {
@@ -452,92 +325,233 @@ export function scoreCandidate(candidate, fullText) {
     score,
     positiveSignals,
     negativeSignals,
-    monthlyWithoutAnnual,
+    monthlyWithoutAnnual: subAnnualWithoutAnnualFraming,
+    subAnnualWithoutAnnualFraming,
     structuralReasons: reasons,
+    primaryLabel,
+    hardLineReject,
+    ruleMatches,
+    labelWeight,
+  };
+}
+
+const MIN_ACCEPT_SCORE = 4;
+/** When two candidates are this close in score but disagree on $, call it ambiguous. */
+const SCORE_TIE_AMBIGUITY = 2;
+
+/**
+ * Choose a single best candidate or declare ambiguity / no safe pick.
+ */
+export function selectIncomeCandidateResolution(scoredCandidates) {
+  if (!scoredCandidates.length) {
+    return {
+      candidate: null,
+      ambiguous: false,
+      code: "no_candidates",
+      filterNote: "no_dollar_candidates",
+    };
+  }
+
+  const sorted = [...scoredCandidates].sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    return a.startIndex - b.startIndex;
+  });
+
+  const viable = sorted.filter(
+    (c) =>
+      !c.subAnnualWithoutAnnualFraming &&
+      !c.hardLineReject &&
+      c.score >= MIN_ACCEPT_SCORE
+  );
+
+  const best = viable[0];
+  if (!best) {
+    const top = sorted[0];
+    if (top?.subAnnualWithoutAnnualFraming) {
+      return {
+        candidate: null,
+        ambiguous: false,
+        code: "subannual_period",
+        filterNote: "weekly_monthly_biweekly_without_annual_framing",
+        bestAttempt: top,
+      };
+    }
+    if (top?.hardLineReject) {
+      return {
+        candidate: null,
+        ambiguous: false,
+        code: "business_line_only",
+        filterNote: "only_revenue_or_profit_style_line",
+        bestAttempt: top,
+      };
+    }
+    if (top && top.score < MIN_ACCEPT_SCORE) {
+      return {
+        candidate: null,
+        ambiguous: false,
+        code: "low_confidence",
+        filterNote: "no_label_score_above_threshold",
+        bestAttempt: top,
+      };
+    }
+    return {
+      candidate: null,
+      ambiguous: false,
+      code: "no_safe_candidate",
+      filterNote: "no_viable_candidate",
+      bestAttempt: top,
+    };
+  }
+
+  if (best.negativeSignals.length && best.positiveSignals.length === 0) {
+    return {
+      candidate: null,
+      ambiguous: false,
+      code: "negative_only",
+      filterNote: "penalties_without_income_label",
+      bestAttempt: best,
+    };
+  }
+
+  const second = viable[1];
+  if (second && best.value !== second.value && second.score >= MIN_ACCEPT_SCORE) {
+    const gap = best.score - second.score;
+    const bw = best.labelWeight ?? 0;
+    const sw = second.labelWeight ?? 0;
+
+    if (gap <= SCORE_TIE_AMBIGUITY) {
+      if (bw > sw) {
+        return {
+          candidate: best,
+          ambiguous: false,
+          code: "ok",
+          filterNote: "label_priority_over_close_scores",
+          contenders: [best, second],
+        };
+      }
+      if (sw > bw) {
+        return {
+          candidate: second,
+          ambiguous: false,
+          code: "ok",
+          filterNote: "label_priority_over_close_scores",
+          contenders: [best, second],
+        };
+      }
+      if (gap <= 1) {
+        return {
+          candidate: null,
+          ambiguous: true,
+          code: "near_tie_distinct_values",
+          filterNote: "same_label_tier_top_two_scores_too_close",
+          contenders: [best, second],
+        };
+      }
+      if (second.score >= MIN_ACCEPT_SCORE + 1) {
+        return {
+          candidate: null,
+          ambiguous: true,
+          code: "conflicting_income_fields",
+          filterNote: "same_label_tier_two_strong_amounts_disagree",
+          contenders: [best, second],
+        };
+      }
+    }
+  }
+
+  const onlyCaution =
+    best.primaryLabel === "Taxable Income" &&
+    best.positiveSignals.every((p) => p === "Taxable Income" || p === "income (generic)");
+
+  if (onlyCaution && second && second.score >= MIN_ACCEPT_SCORE && best.value !== second.value) {
+    const gap = best.score - second.score;
+    if (gap <= 3) {
+      return {
+        candidate: null,
+        ambiguous: true,
+        code: "taxable_vs_other_field",
+        filterNote: "taxable_income_not_clear_winner",
+        contenders: [best, second],
+      };
+    }
+  }
+
+  return {
+    candidate: best,
+    ambiguous: false,
+    code: "ok",
+    filterNote: "ok",
+    contenders: second ? [best, second] : [best],
   };
 }
 
 /**
- * Pick a single best candidate or return null if confidence is too low / ambiguous.
+ * Map chosen candidate → Verified / Not Verified / Unable to Determine.
  */
-export function selectIncomeCandidate(scoredCandidates) {
-  if (!scoredCandidates.length) return null;
-
-  const sorted = [...scoredCandidates].sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score;
-    // Deterministic tie-breaker for stable demos (not "pick the richest person")
-    return a.startIndex - b.startIndex;
-  });
-
-  const best = sorted[0];
-
-  // Hard reject: monthly figure without explicit annual framing
-  if (best.monthlyWithoutAnnual) {
-    return null;
-  }
-
-  // Minimum score gate (tuned for a case study — favors caution)
-  const MIN_ACCEPT_SCORE = 4;
-  if (best.score < MIN_ACCEPT_SCORE) {
-    return null;
-  }
-
-  // Ambiguity: two strong interpretations close together
-  const second = sorted[1];
-  if (second && second.score >= MIN_ACCEPT_SCORE && best.score - second.score <= 1) {
-    return null;
-  }
-
-  // If negatives outweigh positives for the top pick, bail out
-  if (best.negativeSignals.length && best.positiveSignals.length === 0) {
-    return null;
-  }
-
-  return best;
-}
-
-/**
- * Map AGI candidate to Verified / Not Verified / Unable to Determine.
- * @param {{ candidate: object | null, ambiguous: boolean }} agiResolution
- */
-export function determineAgiVerification(agiResolution) {
-  const { candidate, ambiguous, filterNote } = agiResolution;
+export function determineIncomeVerification(resolution) {
+  const { candidate, ambiguous, code, filterNote } = resolution;
 
   if (ambiguous) {
     return {
       status: "Unable to Determine",
       value: null,
       formattedValue: "—",
-      reason:
-        "Multiple different Adjusted Gross Income (AGI) amounts were found; cannot pick one safely.",
+      matchedLabel: null,
       confidence: "none",
+      reason:
+        "Multiple plausible income values were found with no clear winner; cannot determine the correct figure confidently.",
+      detailCode: code,
     };
   }
 
   if (!candidate) {
     let reason =
-      "No Adjusted Gross Income (AGI) dollar amount was found next to a recognized AGI label.";
-    if (filterNote === "primary_lines_rejected_not_using_short_fallback") {
+      "No dollar amount was found next to a recognized personal income label with sufficient confidence.";
+    if (code === "subannual_period") {
       reason =
-        "Adjusted Gross Income labels were present but each matching line looked like a non-AGI row (for example revenue or receipts); refusing to substitute a different line.";
+        "Only weekly, biweekly, or monthly income amounts were found; these are not annualized automatically.";
+    } else if (code === "business_line_only") {
+      reason =
+        "Only revenue- or profit-style fields were found, which are not treated as verified personal income.";
+    } else if (code === "low_confidence" || filterNote === "no_label_score_above_threshold") {
+      reason =
+        "No income field matched strongly enough in context; refusing to guess from unrelated dollar amounts.";
+    } else if (code === "negative_only") {
+      reason =
+        "Dollar amounts appeared next to payment, tax, or expense-style labels rather than personal income.";
     }
     return {
       status: "Unable to Determine",
       value: null,
       formattedValue: "—",
-      reason,
+      matchedLabel: null,
       confidence: "none",
+      reason,
+      detailCode: code,
+      bestAttempt: resolution.bestAttempt,
     };
   }
 
-  const confidence = "high";
+  const label = candidate.primaryLabel || "Selected income";
+  const conf =
+    label === "Taxable Income" ? "medium" : STRONG_POSITIVE_KEYS.has(label) || label === "AGI"
+      ? "high"
+      : "medium";
+
+  const matchedPhrase =
+    label === "income (generic)"
+      ? "a generic income mention"
+      : label;
+
   if (candidate.value > INCOME_THRESHOLD) {
     return {
       status: "Verified",
       value: candidate.value,
       formattedValue: formatUsd(candidate.value),
-      reason: `AGI (${formatUsd(candidate.value)}) is above ${formatUsd(INCOME_THRESHOLD)}.`,
-      confidence,
+      matchedLabel: label,
+      confidence: conf,
+      reason: `Matched ${matchedPhrase}. Amount is above ${formatUsd(INCOME_THRESHOLD)}.`,
+      detailCode: "verified",
     };
   }
 
@@ -545,54 +559,57 @@ export function determineAgiVerification(agiResolution) {
     status: "Not Verified",
     value: candidate.value,
     formattedValue: formatUsd(candidate.value),
-    reason: `AGI (${formatUsd(candidate.value)}) is at or below ${formatUsd(INCOME_THRESHOLD)}.`,
-    confidence,
+    matchedLabel: label,
+    confidence: conf,
+    reason: `Matched ${matchedPhrase}. Amount is at or below ${formatUsd(INCOME_THRESHOLD)}.`,
+    detailCode: "not_verified",
   };
 }
 
-/**
- * @deprecated Use determineAgiVerification for product logic; kept for unit-style reuse of scoring path.
- */
+/** @deprecated Use determineIncomeVerification with full resolution object. */
 export function determineVerification(candidate) {
-  return determineAgiVerification({
+  if (!candidate) {
+    return determineIncomeVerification({
+      candidate: null,
+      ambiguous: false,
+      code: "legacy",
+    });
+  }
+  return determineIncomeVerification({
     candidate,
     ambiguous: false,
+    code: "ok",
   });
 }
 
 /**
- * Convenience pipeline used by the UI layer.
- * Decision uses **AGI only**; `candidates` remain heuristic-scored for the debug panel.
- * @param {object} [options]
- * @param {boolean} [options.debug] — include `debug` payload (also log from app when `?debug=1`)
- * @param {object} [options.extractionMeta] — pdf.js metadata from `extractPdfText` (worker URL, page count)
+ * Full pipeline for the UI: extract dollars → score by labels → select safely → threshold.
  */
 export function analyzeIncomeFromText(fullText, options = {}) {
   const text = normalizePdfText(fullText);
-  const agiResolution = selectAgiCandidate(text, options);
-  const result = determineAgiVerification(agiResolution);
-
   const base = extractCandidateValues(text);
   const scored = base.map((c) => scoreCandidate(c, text));
+  const resolution = selectIncomeCandidateResolution(scored);
+  const result = determineIncomeVerification(resolution);
 
   const debug =
     options.debug === true
       ? {
           normalizedLength: text.length,
           normalizedPreview: text.slice(0, 2500),
-          agiResolution,
+          selectionResolution: resolution,
           extractionMeta: options.extractionMeta ?? null,
           topScoredCandidates: [...scored]
             .sort((a, b) => b.score - a.score)
-            .slice(0, 12),
+            .slice(0, 16),
         }
       : undefined;
 
   return {
     result,
     candidates: scored,
-    chosen: agiResolution.candidate,
-    agiResolution,
+    chosen: resolution.candidate,
+    selectionResolution: resolution,
     debug,
   };
 }

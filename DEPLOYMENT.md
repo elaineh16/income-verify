@@ -61,7 +61,7 @@ Details vary by template; the important part is that the **published artifact** 
 2. Upload the PDF and click **Verify**.
 3. In DevTools → **Console**, inspect `[income-verifier] parse + verify debug`:
    - **`extractionMeta.workerSrc`** / **`workerPinnedVersion`** — worker must match the pdf.js API version.
-   - **`normalizedPreview`** — text after **reading-order** reconstruction; AGI labels should sit on sensible lines.
+   - **`normalizedPreview`** — text after **reading-order** reconstruction; income-related labels should sit on sensible lines.
 4. In **Extraction details**, the same `debug` object appears in the JSON when `debug=1`.
 
 Typical **root cause** of “right locally, wrong on Vercel”: PDF text items were concatenated in **content-stream order**, so “$420k revenue” could appear **before** “Adjusted Gross Income” on a single synthesized line, confusing label regexes. This project fixes that by sorting items into lines (see `parser.js`).

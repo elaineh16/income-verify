@@ -1,12 +1,13 @@
 # Income Verification Tool (browser-only)
 
-A small **vanilla JavaScript** demo that uploads a PDF, extracts text with **Mozilla pdf.js**, finds the **Adjusted Gross Income (AGI)** amount using a **label-anchored regex** (not a loose “biggest number” heuristic), and compares AGI to **$150,000**. If AGI cannot be read unambiguously, the tool returns **Unable to Determine**.
+A small **vanilla JavaScript** demo that uploads a PDF, extracts text with **Mozilla pdf.js**, and picks a **single relevant personal income dollar amount** using **label-guided heuristics** (not “largest number on the page”). That value is compared to **$150,000**. If the document does not support one clear choice, the tool returns **Unable to Determine**.
 
 ## Project overview
 
 - **Frontend-only**: no backend, no OCR, no LLMs.
-- **Deterministic**: same PDF → same output; the verdict is tied to the parsed AGI amount.
-- **Conservative**: missing AGI labels, multiple conflicting AGI amounts, or unreadable text → **Unable to Determine**.
+- **Label-guided**: strong matches include **Adjusted Gross Income**, **annual / gross / total income**, **salary**, **wages**, **compensation**, and similar. **AGI** remains a very strong signal but is not the only path.
+- **Conservative tradeoff**: the tool prefers **precision** and **Unable to Determine** over aggressive guessing when labels conflict, when only business P&L lines appear (e.g. revenue / net profit), or when amounts are explicitly **weekly / monthly / biweekly** without annual framing (those are **not** annualized).
+- **Deterministic**: same PDF → same output for a given extraction.
 
 ## Setup (local)
 
@@ -25,22 +26,23 @@ python3 -m http.server 8080
 
 ## How it works (high level)
 
-1. **`parser.js`**: validates the file, reads bytes, runs pdf.js page-by-page, concatenates text.
-2. **`verifier.js`**: resolves **AGI** with patterns like `Adjusted Gross Income (AGI): $…` (and a small `AGI: $…` fallback). The UI’s “Extraction details” may still list other dollar amounts with legacy keyword scores **for debugging only**; they do **not** drive the decision.
-3. **`utils.js`**: small shared helpers (validation, formatting, context windows).
-4. **`app.js` + `index.html` + `style.css`**: UI states (upload → loading → result/error) and optional debug JSON.
+1. **`parser.js`**: validates the file, reads bytes, runs pdf.js page-by-page, rebuilds **reading order** text (see comments for content-stream ordering pitfalls).
+2. **`verifier.js`**: finds currency-like amounts, scores each using **regex label matches** on local context (high-weight personal-income phrases, caution tier such as **taxable income**, and negative phrases such as **revenue**, **net profit**, **payment**, **monthly income**, etc.). Selects **one** candidate only if the score gap vs the next plausible amount is clear enough; otherwise **Unable to Determine**.
+3. **`utils.js`**: validation, formatting, context windows, text normalization.
+4. **`app.js` + `index.html` + `style.css`**: upload → loading → result, **selected value**, matched label line, explanation, and optional debug JSON (`?debug=1`).
 
 ## Assumptions (explicit)
 
-- PDFs are **clean and machine-readable** (text exists in the PDF structure).
-- **AGI** appears as **extractable text** in a form close to: `Adjusted Gross Income (AGI): $123,456` (see `verifier.js` for exact patterns).
-- The app **does not infer AGI** from unrelated lines (e.g., business revenue or taxable income).
+- PDFs are **clean and machine-readable** (text exists in the PDF structure). **Scanned PDFs are not supported** without OCR.
+- Income phrases appear as **extractable text** near the dollar figure in a form the regexes recognize (spacing quirks are handled by normalizing context).
+- The tool **does not annualize** weekly / monthly / biweekly pay automatically.
+- **Business revenue / profit** lines are **not** treated as verified personal income unless a recognized personal-income label also applies.
 
 ## Limitations (explicit)
 
 - **Scanned/image PDFs** are not supported (no OCR).
-- **Unusual layouts** (tables reconstructed poorly, rotated text, split strings) can yield missing/wrong text.
-- **Ambiguous financial documents** may return **Unable to Determine** by design.
+- **Unusual layouts** (tables reconstructed poorly, rotated text) can yield missing or merged lines.
+- **Ambiguous documents** (two strong income figures that disagree) return **Unable to Determine** by design.
 - This is **case-study heuristic logic**, not production-grade document understanding.
 
 ## Deploying to GitHub Pages
@@ -48,27 +50,27 @@ python3 -m http.server 8080
 1. Push this repository to GitHub.
 2. In the repo **Settings → Pages**:
    - **Source**: Deploy from a branch **or** GitHub Actions (static site).
-3. If you publish **only** this subfolder, either:
-   - move these files to the repo root / `docs/` folder Pages expects, **or**
-   - set Pages to publish from `/income-verifier` if your hosting setup supports subfolder roots.
+3. If you publish **only** this subfolder, either move files to **`docs/`** or publish from `/income-verifier` if your host supports it.
 
-**Module paths**: the app uses relative imports (`./app.js`, `./parser.js`, …). As long as the site root serves this folder, paths stay valid.
+**Module paths**: relative imports (`./app.js`, `./parser.js`, …). The site root must serve this folder.
 
-**CDN note**: pdf.js is loaded from jsDelivr in `parser.js`. That requires network access in the browser when first loading the tool.
+**CDN note**: pdf.js loads from jsDelivr in `parser.js`; the browser needs network access when first loading the tool.
 
 ## Files
 
-| File        | Role                                      |
-| ----------- | ----------------------------------------- |
-| `index.html` | Page structure + module entry          |
-| `style.css`  | Layout, states, accessible basics        |
-| `app.js`     | UI wiring + state machine                 |
-| `parser.js`  | pdf.js text extraction                    |
-| `verifier.js`| Candidates, scoring, selection, verdict |
-| `utils.js`   | Shared helpers                            |
+| File         | Role                                      |
+| ------------ | ----------------------------------------- |
+| `index.html` | Page structure + module entry             |
+| `style.css`  | Layout, states, accessible basics         |
+| `app.js`     | UI wiring + state machine               |
+| `parser.js`  | pdf.js text extraction                  |
+| `verifier.js`| Label scoring, selection, threshold     |
+| `utils.js`   | Shared helpers                          |
 
-## Threshold rule (AGI only)
+## Threshold rule
 
-- **Verified**: parsed **AGI** **>** $150,000  
-- **Not Verified**: parsed **AGI** **≤** $150,000  
-- **Unable to Determine**: no AGI match, **multiple different AGI values** in the text, parsing failure, or no readable text
+- **Verified**: selected income value **>** $150,000  
+- **Not Verified**: selected value **≤** $150,000  
+- **Unable to Determine**: no safe selection, **conflicting** plausible income figures, **subannual** pay without annual framing, **business-only** lines, parsing failure, or no readable text
+
+See **`INSTALL.md`** for optional **Playwright** end-to-end tests.
