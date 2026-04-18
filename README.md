@@ -13,6 +13,31 @@ A lightweight **JavaScript** web app that uploads a PDF, extracts text using **M
 - **Conservative logic**: Avoids guessing and returns **Unable to Determine** if multiple or unclear values exist
 - **Deterministic**: Same input gives the same output
 
+## Assumptions
+
+- PDFs are **text-based** (not scanned)  
+- Income values are **labeled and extractable** from text  
+- Monthly or weekly values are **not annualized automatically**  
+
+## Limitations
+
+- No OCR support  
+- Scanned PDFs are unsupported  
+- Ambiguous documents return **Unable to Determine**  
+- Heuristic-based (not full document intelligence)  
+
+## Tech
+
+- Vanilla JavaScript  
+- Mozilla **pdf.js**  
+- Static, GitHub Pages–friendly  
+
+## Decision Rule
+
+- **Verified**: income > $150,000  
+- **Not Verified**: income ≤ $150,000  
+- **Unable to Determine**: no confident selection  
+
 ## Setup
 
 Run locally with a simple static server:
